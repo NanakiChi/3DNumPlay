@@ -3,10 +3,229 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>3Dナンプレ</title>
+    <title>3D Sudoku (9x9x9)</title>
+    <style>
+        body { font-family: 'Helvetica', sans-serif; text-align: center; background-color: #f0f0f0; user-select: none; }
+        h1 { margin-bottom: 5px; }
+        .controls { margin: 15px; }
+        button { padding: 10px 20px; font-size: 16px; cursor: pointer; margin: 0 10px; }
+        #level-indicator { font-size: 18px; font-weight: bold; display: inline-block; width: 120px; }
+
+        /* 盤面デザイン */
+        #board {
+            display: grid;
+            grid-template-columns: repeat(9, 40px);
+            grid-gap: 2px;
+            background-color: black;
+            width: fit-content;
+            margin: 0 auto;
+            border: 2px solid black;
+        }
+        .cell {
+            width: 40px; height: 40px;
+            background-color: white;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 20px; font-weight: bold; cursor: pointer;
+        }
+        /* 3x3ブロックの区切り（視覚的トリック） */
+        .cell:nth-child(3n) { margin-right: 2px; }
+        .cell:nth-child(9n) { margin-right: 0; }
+        .row-gap { margin-bottom: 2px; } /* JSでクラス付与 */
+
+        /* 状態ごとの色 */
+        .selected { background-color: yellow !important; }
+        .initial { background-color: #e0e0e0; color: black; }
+        .user-input { color: blue; }
+        .error { color: red; }
+
+        .info { font-size: 12px; color: #555; margin-top: 10px; }
+    </style>
 </head>
 <body>
-    <h1>3Dナンプレ</h1>
-    <p>プロトタイプ</p>
+
+    <h1>3D Sudoku</h1>
+    <div class="controls">
+        <button onclick="changeLayer(-1)">◀ Prev</button>
+        <span id="level-indicator">Level 1 / 9</span>
+        <button onclick="changeLayer(1)">Next ▶</button>
+    </div>
+
+    <div id="board"></div>
+
+    <div class="info">
+        [操作] 左クリック:選択 / 数字キー:入力 / 0orDel:消去 / <b>右クリック:奥行き確認</b>
+    </div>
+
+    <script>
+        // --- ゲームロジック (JS版) ---
+        const SIZE = 9;
+        const LAYERS = 9;
+        let currentLayer = 0;
+        let selectedCell = null; // {r, c}
+        let board = [];         // 現在の盤面
+        let initialBoard = [];  // 初期盤面（変更不可用）
+
+        // 初期化
+        function initGame() {
+            // 1. ベース層の作成
+            let base = Array.from({length: 9}, (_, r) =>
+                Array.from({length: 9}, (_, c) => (r * 3 + Math.floor(r / 3) + c) % 9 + 1)
+            );
+
+            // 数字シャッフル
+            let nums = [1,2,3,4,5,6,7,8,9].sort(() => Math.random() - 0.5);
+            let map = {};
+            nums.forEach((n, i) => map[i+1] = n);
+            base = base.map(row => row.map(n => map[n]));
+
+            // 2. 3D展開 (シフト)
+            board = [];
+            for (let z = 0; z < LAYERS; z++) {
+                let layer = [];
+                let shift = z * 3 + z;
+                for (let r = 0; r < SIZE; r++) {
+                    let row = [];
+                    for (let c = 0; c < SIZE; c++) {
+                        let val = base[r][c];
+                        let newVal = (val + shift - 1) % 9 + 1;
+                        row.push(newVal);
+                    }
+                    layer.push(row);
+                }
+                board.push(layer);
+            }
+
+            // 3. マスク (穴あけ)
+            // 初期盤面としてディープコピー
+            initialBoard = JSON.parse(JSON.stringify(board));
+
+            // 各層でランダムに消す (難易度調整: 45個消す)
+            for (let z = 0; z < LAYERS; z++) {
+                let count = 45;
+                while (count > 0) {
+                    let r = Math.floor(Math.random() * 9);
+                    let c = Math.floor(Math.random() * 9);
+                    if (board[z][r][c] !== 0) {
+                        board[z][r][c] = 0;
+                        initialBoard[z][r][c] = 0; // 初期状態も0にする
+                        count--;
+                    }
+                }
+            }
+            // 解答保持用ではないので、initialBoardは「固定マスか」の判定に使う
+            // boardは現在進行形
+
+            renderBoard();
+        }
+
+        // ルール判定
+        function isValidMove(z, r, c, num) {
+            if (num === 0) return {valid: true};
+
+            // 横
+            for (let i = 0; i < 9; i++) if (i !== c && board[z][r][i] === num) return {valid: false, msg: "横列に同じ数字があります"};
+            // 縦
+            for (let i = 0; i < 9; i++) if (i !== r && board[z][i][c] === num) return {valid: false, msg: "縦列に同じ数字があります"};
+            // 3x3
+            let boxR = Math.floor(r/3)*3, boxC = Math.floor(c/3)*3;
+            for(let i=0; i<3; i++) for(let j=0; j<3; j++) {
+                if ((boxR+i !== r || boxC+j !== c) && board[z][boxR+i][boxC+j] === num) return {valid: false, msg: "ブロック内に同じ数字があります"};
+            }
+            // 奥行き
+            for (let i = 0; i < 9; i++) {
+                if (i !== z && board[i][r][c] === num) return {valid: false, msg: `Level ${i+1} の同じ場所に数字があります`};
+            }
+            return {valid: true};
+        }
+
+        // --- UI描画 ---
+        function renderBoard() {
+            const boardDiv = document.getElementById('board');
+            boardDiv.innerHTML = '';
+            document.getElementById('level-indicator').innerText = `Level ${currentLayer + 1} / 9`;
+
+            for (let r = 0; r < 9; r++) {
+                for (let c = 0; c < 9; c++) {
+                    let val = board[currentLayer][r][c];
+                    let isInit = initialBoard[currentLayer][r][c] !== 0;
+
+                    let cell = document.createElement('div');
+                    cell.className = 'cell';
+                    if (isInit) cell.classList.add('initial');
+                    else if (val !== 0) cell.classList.add('user-input');
+
+                    // 3x3の下線用マージン
+                    if (r === 2 || r === 5) cell.style.marginBottom = "2px";
+
+                    cell.innerText = val === 0 ? '' : val;
+
+                    // 選択状態
+                    if (selectedCell && selectedCell.r === r && selectedCell.c === c) {
+                        cell.classList.add('selected');
+                    }
+
+                    // イベント
+                    cell.onclick = () => {
+                        if (!isInit) {
+                            selectedCell = {r, c};
+                            renderBoard();
+                        }
+                    };
+
+                    // 右クリック（奥行き確認）
+                    cell.oncontextmenu = (e) => {
+                        e.preventDefault();
+                        showDepthInfo(r, c);
+                    };
+
+                    boardDiv.appendChild(cell);
+                }
+            }
+        }
+
+        function changeLayer(delta) {
+            let newLayer = currentLayer + delta;
+            if (newLayer >= 0 && newLayer < LAYERS) {
+                currentLayer = newLayer;
+                selectedCell = null;
+                renderBoard();
+            }
+        }
+
+        function showDepthInfo(r, c) {
+            let info = [];
+            for(let z=0; z<9; z++) {
+                let v = board[z][r][c];
+                let mark = (z === currentLayer) ? " ←" : "";
+                info.push(`L${z+1}: [ ${v === 0 ? '.' : v} ]${mark}`);
+            }
+            alert(`座標 (${r+1}, ${c+1}) の奥行き:\n\n` + info.join('\n'));
+        }
+
+        // キーボード入力
+        document.addEventListener('keydown', (e) => {
+            if (!selectedCell) return;
+
+            let num = -1;
+            if (e.key >= '1' && e.key <= '9') num = parseInt(e.key);
+            if (e.key === '0' || e.key === 'Backspace' || e.key === 'Delete') num = 0;
+
+            if (num !== -1) {
+                let {r, c} = selectedCell;
+                let check = isValidMove(currentLayer, r, c, num);
+
+                if (check.valid) {
+                    board[currentLayer][r][c] = num;
+                    renderBoard();
+                } else {
+                    alert(check.msg);
+                }
+            }
+        });
+
+        // ゲーム開始
+        initGame();
+
+    </script>
 </body>
 </html>
